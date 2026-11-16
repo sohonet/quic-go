@@ -167,6 +167,11 @@ type Config struct {
 	// This allows the sending of QUIC packets that fully utilize the available MTU of the path.
 	// Path MTU discovery is only available on systems that allow setting of the Don't Fragment (DF) bit.
 	DisablePathMTUDiscovery bool
+	// DisableHyStart uses loss-based slow start instead of HyStart's delay-based
+	// early exit. This can avoid premature exit on paths with variable propagation
+	// delay, at the cost of potentially overshooting a bottleneck before loss occurs.
+	// Pacing, congestion-window limits and the response to loss are unchanged.
+	DisableHyStart bool
 	// Allow0RTT allows the application to decide if a 0-RTT connection attempt should be accepted.
 	// Only valid for the server.
 	Allow0RTT bool

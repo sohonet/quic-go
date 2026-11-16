@@ -103,8 +103,9 @@ type sentPacketHandler struct {
 	// The alarm timeout
 	alarm alarmTimer
 
-	enableECN  bool
-	ecnTracker ecnHandler
+	enableECN      bool
+	ecnTracker     ecnHandler
+	disableHyStart bool
 
 	perspective protocol.Perspective
 
@@ -128,6 +129,7 @@ func NewSentPacketHandler(
 	pers protocol.Perspective,
 	qlogger qlogwriter.Recorder,
 	logger utils.Logger,
+	disableHyStart bool,
 ) SentPacketHandler {
 	congestion := congestion.NewCubicSender(
 		congestion.DefaultClock{},
@@ -152,6 +154,7 @@ func NewSentPacketHandler(
 		perspective:                    pers,
 		qlogger:                        qlogger,
 		logger:                         logger,
+		disableHyStart:                 disableHyStart,
 	}
 	if enableECN {
 		h.enableECN = true
@@ -417,7 +420,9 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 				}
 				h.largestAckedTime = p.SendTime
 			}
-			h.congestion.MaybeExitSlowStart()
+			if !h.disableHyStart {
+				h.congestion.MaybeExitSlowStart()
+			}
 		}
 	}
 
