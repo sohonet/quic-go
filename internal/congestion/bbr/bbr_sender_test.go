@@ -2,10 +2,87 @@ package bbr
 
 import (
 	"testing"
+	"time"
 
 	"github.com/quic-go/quic-go/internal/congestion"
+	"github.com/quic-go/quic-go/internal/monotime"
+	"github.com/quic-go/quic-go/internal/utils"
 	"github.com/stretchr/testify/require"
 )
+
+func TestApplicationLimitedQuietTrafficDoesNotEndStartup(t *testing.T) {
+	for _, notify := range []bool{false, true} {
+		b := NewBbrSender(DefaultClock{}, 1280, ProfileStandard)
+		rtt := utils.NewRTTStats()
+		rtt.UpdateRTT(55*time.Millisecond, 0)
+		b.SetRTTStatsProvider(rtt)
+		start := monotime.Now()
+		const size = congestion.ByteCount(1280)
+		var pn congestion.PacketNumber
+		for round := 1; round <= 30; round++ {
+			sent := start.Add(time.Duration(round) * 100 * time.Millisecond)
+			var acked []congestion.AckedPacketInfo
+			for packet := 0; packet < 8; packet++ {
+				pn++
+				b.OnPacketSent(sent.Add(time.Duration(packet)*200*time.Microsecond), congestion.ByteCount(packet)*size, pn, size, true)
+				acked = append(acked, congestion.AckedPacketInfo{PacketNumber: pn, BytesAcked: size})
+			}
+			if notify {
+				b.OnApplicationLimited()
+			}
+			b.OnCongestionEventEx(congestion.CongestionEvent{
+				Time: sent.Add(55 * time.Millisecond), PriorInFlight: 8 * size, FirstInFlight: pn + 1,
+				AckedPackets: acked,
+			})
+		}
+		if notify {
+			require.False(t, b.isAtFullBandwidth, "low offered traffic cannot establish the path's full bandwidth")
+			require.Equal(t, bbrMode(bbrModeStartup), b.mode)
+			quietBandwidth := b.bandwidthEstimate()
+			// Resume a larger offered load without exhaustion notifications. ACK-only
+			// packets must not prevent tracked delivery samples from ending the phase.
+			for round := 31; round <= 50; round++ {
+				sent := start.Add(time.Duration(round) * 100 * time.Millisecond)
+				pn++
+				b.OnPacketSent(sent, 0, pn, 32, false)
+				if round == 31 {
+					// The exhaustion boundary can itself be an untracked ACK-only packet.
+					b.OnApplicationLimited()
+				}
+				var acked []congestion.AckedPacketInfo
+				for packet := 0; packet < 32; packet++ {
+					pn++
+					b.OnPacketSent(sent.Add(time.Duration(packet+1)*200*time.Microsecond), congestion.ByteCount(packet)*size, pn, size, true)
+					acked = append(acked, congestion.AckedPacketInfo{PacketNumber: pn, BytesAcked: size})
+				}
+				b.OnCongestionEventEx(congestion.CongestionEvent{
+					Time: sent.Add(55 * time.Millisecond), PriorInFlight: 32 * size, FirstInFlight: pn + 1, AckedPackets: acked,
+				})
+			}
+			require.False(t, b.lastSampleIsAppLimited)
+			require.Greater(t, b.bandwidthEstimate(), quietBandwidth)
+			require.True(t, b.isAtFullBandwidth, "a sustained plateau must still terminate startup")
+		} else {
+			require.True(t, b.isAtFullBandwidth, "control reproduces premature exit without notification")
+		}
+	}
+}
+
+func TestApplicationLimitedStartupStillExitsOnExcessiveLoss(t *testing.T) {
+	for _, appLimited := range []bool{false, true} {
+		for _, estimate := range []Bandwidth{1000000, 2000000} {
+			b := NewBbrSender(DefaultClock{}, 1280, ProfileStandard)
+			b.lastSampleIsAppLimited = appLimited
+			b.bandwidthAtLastRound = 1000000
+			b.maxBandwidth.Update(estimate, 0)
+			b.numLossEventsInRound = defaultStartupFullLossCount
+			b.bytesLostInRound = 2560
+			state := sendTimeState{isValid: true, bytesInFlight: 64000}
+			b.checkIfFullBandwidthReached(&state)
+			require.True(t, b.isAtFullBandwidth, "loss remains authoritative even for an application-limited sample")
+		}
+	}
+}
 
 func TestSetMaxDatagramSizeRescalesPacketSizedWindows(t *testing.T) {
 	const oldMaxDatagramSize = congestion.ByteCount(1000)

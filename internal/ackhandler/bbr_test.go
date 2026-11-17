@@ -58,8 +58,33 @@ func TestBBRActivationAndMigration(t *testing.T) {
 
 type recordingBBR struct {
 	congestion.BatchedSendAlgorithm
-	events    []congestion.CongestionEvent
-	sentPrior []protocol.ByteCount
+	events             []congestion.CongestionEvent
+	sentPrior          []protocol.ByteCount
+	applicationLimited int
+}
+
+func (r *recordingBBR) OnApplicationLimited() {
+	r.applicationLimited++
+	r.BatchedSendAlgorithm.OnApplicationLimited()
+}
+
+func TestBBRApplicationLimitedForwardedOnlyAfterActivation(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		h := newBBRTestHandler(enabled)
+		h.OnApplicationLimited() // no BBR instance while handshaking
+		now := monotime.Now()
+		h.DropPackets(protocol.EncryptionInitial, now)
+		h.DropPackets(protocol.EncryptionHandshake, now)
+		if !enabled {
+			h.OnApplicationLimited()
+			require.Nil(t, h.bbr)
+			continue
+		}
+		r := &recordingBBR{BatchedSendAlgorithm: h.bbr}
+		h.bbr = r
+		h.OnApplicationLimited()
+		require.Equal(t, 1, r.applicationLimited)
+	}
 }
 
 func (r *recordingBBR) OnPacketSent(at monotime.Time, prior protocol.ByteCount, pn protocol.PacketNumber, size protocol.ByteCount, eliciting bool) {

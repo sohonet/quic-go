@@ -54,4 +54,6 @@ type BatchedSendAlgorithm interface {
 	SendAlgorithmWithDebugInfos
 	SetRTTStatsProvider(RTTStatsProvider)
 	OnCongestionEventEx(CongestionEvent)
+	// OnApplicationLimited records exhaustion of sendable data, not pacing or congestion blocking.
+	OnApplicationLimited()
 }

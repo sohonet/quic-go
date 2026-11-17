@@ -1211,6 +1211,13 @@ func (h *sentPacketHandler) MigratedPath(now monotime.Time, initialMaxDatagramSi
 	h.setLossDetectionTimer(now)
 }
 
+// OnApplicationLimited forwards exhaustion of sendable data to an active BBR sender.
+func (h *sentPacketHandler) OnApplicationLimited() {
+	if h.bbr != nil {
+		h.bbr.OnApplicationLimited()
+	}
+}
+
 // startBBR runs on the connection goroutine after the handshake packet-number
 // spaces have been dropped. A migration starts a fresh path model and sampler.
 func (h *sentPacketHandler) startBBR() {

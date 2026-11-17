@@ -798,6 +798,12 @@ func (b *bbrSender) updateGainCyclePhase(now monotime.Time, priorInFlight conges
 // Tracks for how many round-trips the bandwidth has not increased
 // significantly.
 func (b *bbrSender) checkIfFullBandwidthReached(lastPacketSendState *sendTimeState) {
+	// Offered load cannot establish the path's capacity, but excessive loss
+	// remains a reason to leave STARTUP even for an application-limited sample.
+	if b.shouldExitStartupDueToLoss(lastPacketSendState) {
+		b.isAtFullBandwidth = true
+		return
+	}
 	if b.lastSampleIsAppLimited {
 		return
 	}
@@ -814,8 +820,7 @@ func (b *bbrSender) checkIfFullBandwidthReached(lastPacketSendState *sendTimeSta
 	}
 
 	b.roundsWithoutBandwidthGain++
-	if b.roundsWithoutBandwidthGain >= b.numStartupRtts ||
-		b.shouldExitStartupDueToLoss(lastPacketSendState) {
+	if b.roundsWithoutBandwidthGain >= b.numStartupRtts {
 		b.isAtFullBandwidth = true
 	}
 }
@@ -824,6 +829,11 @@ func (b *bbrSender) maybeAppLimited(bytesInFlight congestion.ByteCount) {
 	if bytesInFlight < b.getTargetCongestionWindow(1) {
 		b.sampler.OnAppLimited()
 	}
+}
+
+// OnApplicationLimited records that the transport has exhausted sendable data.
+func (b *bbrSender) OnApplicationLimited() {
+	b.sampler.OnAppLimited()
 }
 
 // Transitions from STARTUP to DRAIN and from DRAIN to PROBE_BW if
