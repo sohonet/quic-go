@@ -172,6 +172,12 @@ type Config struct {
 	// delay, at the cost of potentially overshooting a bottleneck before loss occurs.
 	// Pacing, congestion-window limits and the response to loss are unchanged.
 	DisableHyStart bool
+
+	// EnableBBR opts into the imported BBR controller after handshake confirmation.
+	// Reno remains in use during the handshake and when this option is false.
+	// BBR uses a half-BDP ProbeRTT target and does not currently use ECN marking.
+	// This is not a BBRv3 implementation.
+	EnableBBR bool
 	// Allow0RTT allows the application to decide if a 0-RTT connection attempt should be accepted.
 	// Only valid for the server.
 	Allow0RTT bool

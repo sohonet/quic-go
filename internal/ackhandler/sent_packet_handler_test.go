@@ -120,6 +120,7 @@ func testSentPacketHandlerSendAndAcknowledge(t *testing.T, encLevel protocol.Enc
 		nil,
 		utils.DefaultLogger,
 		false,
+		false,
 	)
 
 	var packets packetTracker
@@ -176,6 +177,7 @@ func TestSentPacketHandlerAcknowledgeSkippedPacket(t *testing.T) {
 		nil,
 		utils.DefaultLogger,
 		false,
+		false,
 	)
 
 	now := monotime.Now()
@@ -219,6 +221,7 @@ func TestSentPacketHandlerRTTAckEliciting(t *testing.T) {
 		protocol.PerspectiveClient,
 		&eventRecorder,
 		utils.DefaultLogger,
+		false,
 		false,
 	)
 
@@ -309,6 +312,7 @@ func TestSentPacketHandlerRTTAcrossPacketNumberSpaces(t *testing.T) {
 		nil,
 		utils.DefaultLogger,
 		false,
+		false,
 	)
 
 	sendPacket := func(t *testing.T, ti monotime.Time, encLevel protocol.EncryptionLevel) protocol.PacketNumber {
@@ -370,6 +374,7 @@ func testSentPacketHandlerRTTAckDelays(t *testing.T, encLevel protocol.Encryptio
 		protocol.PerspectiveClient,
 		nil,
 		utils.DefaultLogger,
+		false,
 		false,
 	)
 
@@ -463,6 +468,7 @@ func testSentPacketHandlerAmplificationLimitServer(t *testing.T, addressValidate
 		nil,
 		utils.DefaultLogger,
 		false,
+		false,
 	)
 
 	if addressValidated {
@@ -535,6 +541,7 @@ func testSentPacketHandlerAmplificationLimitClient(t *testing.T, dropHandshake b
 		nil,
 		utils.DefaultLogger,
 		false,
+		false,
 	)
 
 	require.Equal(t, SendAny, sph.SendMode(monotime.Now()))
@@ -592,6 +599,7 @@ func TestSentPacketHandlerDelayBasedLossDetection(t *testing.T) {
 		nil,
 		utils.DefaultLogger,
 		false,
+		false,
 	)
 
 	var packets packetTracker
@@ -647,6 +655,7 @@ func TestSentPacketHandlerPacketBasedLossDetection(t *testing.T) {
 		protocol.PerspectiveServer,
 		nil,
 		utils.DefaultLogger,
+		false,
 		false,
 	)
 
@@ -710,6 +719,7 @@ func testSentPacketHandlerPTO(t *testing.T, encLevel protocol.EncryptionLevel, p
 		protocol.PerspectiveServer,
 		&eventRecorder,
 		utils.DefaultLogger,
+		false,
 		false,
 	)
 
@@ -930,6 +940,7 @@ func TestSentPacketHandlerPacketNumberSpacesPTO(t *testing.T) {
 		nil,
 		utils.DefaultLogger,
 		false,
+		false,
 	)
 
 	sendPacket := func(t *testing.T, ti monotime.Time, encLevel protocol.EncryptionLevel) protocol.PacketNumber {
@@ -1024,6 +1035,7 @@ func TestSentPacketHandler0RTT(t *testing.T) {
 		nil,
 		utils.DefaultLogger,
 		false,
+		false,
 	)
 
 	var appDataPackets packetTracker
@@ -1076,6 +1088,7 @@ func TestSentPacketHandlerCongestion(t *testing.T) {
 		protocol.PerspectiveServer,
 		nil,
 		utils.DefaultLogger,
+		false,
 		false,
 	)
 	sph.(*sentPacketHandler).congestion = cong
@@ -1179,6 +1192,7 @@ func testSentPacketHandlerRetry(t *testing.T, rtt, expectedRTT time.Duration) {
 		nil,
 		utils.DefaultLogger,
 		false,
+		false,
 	)
 
 	start := monotime.Now()
@@ -1232,6 +1246,7 @@ func TestSentPacketHandlerRetryAfterPTO(t *testing.T) {
 		nil,
 		utils.DefaultLogger,
 		false,
+		false,
 	)
 
 	var packets packetTracker
@@ -1277,6 +1292,7 @@ func TestSentPacketHandlerECN(t *testing.T) {
 		protocol.PerspectiveClient,
 		nil,
 		utils.DefaultLogger,
+		false,
 		false,
 	)
 	sph.(*sentPacketHandler).ecnTracker = ecnHandler
@@ -1384,6 +1400,7 @@ func TestSentPacketHandlerPathProbe(t *testing.T) {
 		nil,
 		utils.DefaultLogger,
 		false,
+		false,
 	)
 	sph.DropPackets(protocol.EncryptionInitial, monotime.Now())
 	sph.DropPackets(protocol.EncryptionHandshake, monotime.Now())
@@ -1466,6 +1483,7 @@ func TestSentPacketHandlerPathProbeAckAndLoss(t *testing.T) {
 		nil,
 		utils.DefaultLogger,
 		false,
+		false,
 	)
 	sph.DropPackets(protocol.EncryptionInitial, monotime.Now())
 	sph.DropPackets(protocol.EncryptionHandshake, monotime.Now())
@@ -1544,6 +1562,7 @@ func testSentPacketHandlerRandomized(t *testing.T, seed uint64) {
 		nil,
 		utils.DefaultLogger,
 		false,
+		false,
 	)
 	sph.DropPackets(protocol.EncryptionInitial, monotime.Now())
 	sph.DropPackets(protocol.EncryptionHandshake, monotime.Now())
@@ -1614,6 +1633,7 @@ func TestSentPacketHandlerSpuriousLoss(t *testing.T) {
 		protocol.PerspectiveClient,
 		&eventRecorder,
 		utils.DefaultLogger,
+		false,
 		false,
 	)
 
@@ -1752,6 +1772,7 @@ func benchmarkSendAndAcknowledge(b *testing.B, ackEvery, inFlight int) {
 		nil,
 		utils.DefaultLogger,
 		false,
+		false,
 	)
 	now := monotime.Now()
 	sph.DropPackets(protocol.EncryptionInitial, now)
@@ -1800,7 +1821,7 @@ func TestSentPacketHandlerDisableHyStart(t *testing.T) {
 			rtt := utils.NewRTTStats()
 			rtt.UpdateRTT(10*time.Millisecond, 0)
 			h := NewSentPacketHandler(0, 1200, rtt, &utils.ConnectionStats{}, false, false, nil,
-				protocol.PerspectiveClient, nil, utils.DefaultLogger, disable).(*sentPacketHandler)
+				protocol.PerspectiveClient, nil, utils.DefaultLogger, disable, false).(*sentPacketHandler)
 			var packets packetTracker
 			now := monotime.Now()
 			send := func(at monotime.Time) protocol.PacketNumber {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go/internal/congestion"
+	"github.com/quic-go/quic-go/internal/congestion/bbr"
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/qerr"
@@ -89,9 +90,16 @@ type sentPacketHandler struct {
 
 	bytesInFlight protocol.ByteCount
 
-	congestion congestion.SendAlgorithmWithDebugInfos
-	rttStats   *utils.RTTStats
-	connStats  *utils.ConnectionStats
+	congestion       congestion.SendAlgorithmWithDebugInfos
+	bbr              congestion.BatchedSendAlgorithm
+	bbrBytesInFlight protocol.ByteCount
+	neuteredBBR      []protocol.PacketNumber
+	enableBBR        bool
+	maxDatagramSize  protocol.ByteCount
+	ackedBBR         []congestion.AckedPacketInfo
+	lostBBR          []congestion.LostPacketInfo
+	rttStats         *utils.RTTStats
+	connStats        *utils.ConnectionStats
 
 	// The number of times a PTO has been sent without receiving an ack.
 	ptoCount uint32
@@ -130,6 +138,7 @@ func NewSentPacketHandler(
 	qlogger qlogwriter.Recorder,
 	logger utils.Logger,
 	disableHyStart bool,
+	enableBBR bool,
 ) SentPacketHandler {
 	congestion := congestion.NewCubicSender(
 		congestion.DefaultClock{},
@@ -155,8 +164,10 @@ func NewSentPacketHandler(
 		qlogger:                        qlogger,
 		logger:                         logger,
 		disableHyStart:                 disableHyStart,
+		enableBBR:                      enableBBR,
+		maxDatagramSize:                initialMaxDatagramSize,
 	}
-	if enableECN {
+	if enableECN && !enableBBR {
 		h.enableECN = true
 		h.ecnTracker = newECNTracker(logger, qlogger)
 	}
@@ -164,6 +175,13 @@ func NewSentPacketHandler(
 }
 
 func (h *sentPacketHandler) removeFromBytesInFlight(p *packet) {
+	if p.bbrInFlight {
+		if p.Length > h.bbrBytesInFlight {
+			panic("negative BBR bytes_in_flight")
+		}
+		h.bbrBytesInFlight -= p.Length
+		p.bbrInFlight = false
+	}
 	if p.includedInBytesInFlight {
 		if p.Length > h.bytesInFlight {
 			panic("negative bytes_in_flight")
@@ -200,6 +218,9 @@ func (h *sentPacketHandler) DropPackets(encLevel protocol.EncryptionLevel, now m
 		// see section 4.9.2 of RFC 9001.
 		h.handshakeConfirmed = true
 		h.handshakePackets = nil
+		if h.enableBBR {
+			h.startBBR()
+		}
 	case protocol.Encryption0RTT:
 		// This function is only called when 0-RTT is rejected,
 		// and not when the client drops 0-RTT keys when the handshake completes.
@@ -300,7 +321,15 @@ func (h *sentPacketHandler) SentPacket(
 			h.numProbesToSend--
 		}
 	}
-	h.congestion.OnPacketSent(t, h.bytesInFlight, pn, size, isAckEliciting)
+	if h.bbr != nil {
+		h.bbr.OnPacketSent(t, h.bbrBytesInFlight, pn, size, isAckEliciting)
+		if isAckEliciting {
+			p.bbrInFlight = true
+			h.bbrBytesInFlight += size
+		}
+	} else {
+		h.congestion.OnPacketSent(t, h.bytesInFlight, pn, size, isAckEliciting)
+	}
 
 	if encLevel == protocol.Encryption1RTT && h.ecnTracker != nil {
 		h.ecnTracker.SentPacket(pn, ecn)
@@ -436,6 +465,8 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 
 	pnSpace.largestAcked = max(pnSpace.largestAcked, largestAcked)
 
+	priorBBRInFlight := h.bbrBytesInFlight
+	h.resetBBREvent()
 	h.detectLostPackets(rcvTime, encLevel)
 	if encLevel == protocol.Encryption1RTT {
 		h.detectLostPathProbes(rcvTime)
@@ -443,7 +474,11 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 	var acked1RTTPacket bool
 	for _, p := range ackedPackets {
 		if p.includedInBytesInFlight {
-			h.congestion.OnPacketAcked(p.PacketNumber, p.Length, priorInFlight, rcvTime)
+			if p.bbrInFlight {
+				h.ackedBBR = append(h.ackedBBR, congestion.AckedPacketInfo{PacketNumber: p.PacketNumber, BytesAcked: p.Length, ReceivedTime: rcvTime})
+			} else if h.bbr == nil {
+				h.congestion.OnPacketAcked(p.PacketNumber, p.Length, priorInFlight, rcvTime)
+			}
 		}
 		if p.EncryptionLevel == protocol.Encryption1RTT {
 			acked1RTTPacket = true
@@ -453,6 +488,8 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 			putPacket(p.packet)
 		}
 	}
+
+	h.finishBBREvent(rcvTime, priorBBRInFlight)
 
 	// detect spurious losses for application data packets, if the ACK was not reordered
 	if encLevel == protocol.Encryption1RTT && largestAcked == pnSpace.largestAcked {
@@ -855,11 +892,23 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 			}
 			pnSpace.history.DeclareLost(pn)
 			if !p.isPathProbePacket && p.IsAckEliciting() {
+				sampled := p.bbrInFlight
+				if sampled && p.IsPathMTUProbePacket {
+					h.neuteredBBR = append(h.neuteredBBR, pn)
+				}
 				// the bytes in flight need to be reduced no matter if the frames in this packet will be retransmitted
 				h.removeFromBytesInFlight(p)
 				h.queueFramesForRetransmission(p)
 				if !p.IsPathMTUProbePacket {
-					h.congestion.OnCongestionEvent(pn, p.Length, priorInFlight)
+					if h.bbr != nil {
+						if sampled {
+							h.lostBBR = append(h.lostBBR, congestion.LostPacketInfo{PacketNumber: pn, BytesLost: p.Length})
+						}
+						h.connStats.PacketsLost.Add(1)
+						h.connStats.BytesLost.Add(uint64(p.Length))
+					} else {
+						h.congestion.OnCongestionEvent(pn, p.Length, priorInFlight)
+					}
 				}
 				if encLevel == protocol.Encryption1RTT && h.ecnTracker != nil {
 					h.ecnTracker.LostPacket(pn)
@@ -889,7 +938,10 @@ func (h *sentPacketHandler) OnLossDetectionTimeout(now monotime.Time) error {
 			})
 		}
 		// Early retransmit or time loss detection
+		priorBBRInFlight := h.bbrBytesInFlight
+		h.resetBBREvent()
 		h.detectLostPackets(now, encLevel)
+		h.finishBBREvent(now, priorBBRInFlight)
 		return nil
 	}
 
@@ -1033,6 +1085,7 @@ func (h *sentPacketHandler) TimeUntilSend() monotime.Time {
 }
 
 func (h *sentPacketHandler) SetMaxDatagramSize(s protocol.ByteCount) {
+	h.maxDatagramSize = s
 	h.congestion.SetMaxDatagramSize(s)
 }
 
@@ -1053,8 +1106,14 @@ func (h *sentPacketHandler) QueueProbePacket(encLevel protocol.EncryptionLevel) 
 	// Keep track of acknowledged frames instead.
 	// Call DeclareLost before queueFramesForRetransmission, which clears the packet's frames.
 	pnSpace.history.DeclareLost(pn)
+	priorBBRInFlight := h.bbrBytesInFlight
+	h.resetBBREvent()
+	if p.bbrInFlight {
+		h.neuteredBBR = append(h.neuteredBBR, pn)
+	}
 	h.removeFromBytesInFlight(p)
 	h.queueFramesForRetransmission(p)
+	h.finishBBREvent(monotime.Now(), priorBBRInFlight)
 	return true
 }
 
@@ -1136,13 +1195,54 @@ func (h *sentPacketHandler) MigratedPath(now monotime.Time, initialMaxDatagramSi
 	for pn := range h.appDataPackets.history.PathProbes() {
 		h.appDataPackets.history.RemovePathProbe(pn)
 	}
-	h.congestion = congestion.NewCubicSender(
-		congestion.DefaultClock{},
-		h.rttStats,
-		h.connStats,
-		initialMaxDatagramSize,
-		true, // use Reno
-		h.qlogger,
-	)
+	h.maxDatagramSize = initialMaxDatagramSize
+	if h.enableBBR && h.handshakeConfirmed {
+		h.startBBR()
+	} else {
+		h.congestion = congestion.NewCubicSender(
+			congestion.DefaultClock{},
+			h.rttStats,
+			h.connStats,
+			initialMaxDatagramSize,
+			true, // use Reno
+			h.qlogger,
+		)
+	}
 	h.setLossDetectionTimer(now)
+}
+
+// startBBR runs on the connection goroutine after the handshake packet-number
+// spaces have been dropped. A migration starts a fresh path model and sampler.
+func (h *sentPacketHandler) startBBR() {
+	sender := bbr.NewBbrSender(bbr.DefaultClock{}, h.maxDatagramSize, bbr.ProfileStandard)
+	sender.SetRTTStatsProvider(h.rttStats)
+	h.bbr = sender
+	h.congestion = sender
+	h.bbrBytesInFlight = 0
+	h.resetBBREvent()
+}
+
+func (h *sentPacketHandler) resetBBREvent() {
+	h.ackedBBR = h.ackedBBR[:0]
+	h.lostBBR = h.lostBBR[:0]
+	h.neuteredBBR = h.neuteredBBR[:0]
+}
+
+func (h *sentPacketHandler) finishBBREvent(now monotime.Time, prior protocol.ByteCount) {
+	if h.bbr == nil || len(h.ackedBBR)+len(h.lostBBR)+len(h.neuteredBBR) == 0 {
+		return
+	}
+	first := h.appDataPackets.largestSent + 1
+	// FirstOutstanding excludes MTU probes; the sampler must retain them too.
+	for pn, p := range h.appDataPackets.history.Packets() {
+		if p.bbrInFlight {
+			first = pn
+			break
+		}
+	}
+	h.bbr.OnCongestionEventEx(congestion.CongestionEvent{
+		Time: now, PriorInFlight: prior, BytesInFlight: h.bbrBytesInFlight,
+		FirstInFlight: first, AckedPackets: h.ackedBBR, LostPackets: h.lostBBR,
+		NeuteredPackets: h.neuteredBBR,
+	})
 }

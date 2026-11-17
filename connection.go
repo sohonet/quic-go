@@ -322,6 +322,7 @@ var newConnection = func(
 		s.qlogger,
 		s.logger,
 		s.config.DisableHyStart,
+		s.config.EnableBBR,
 	)
 	s.currentMTUEstimate.Store(uint32(estimateMaxPayloadSize(protocol.ByteCount(s.config.InitialPacketSize))))
 	statelessResetToken := statelessResetter.GetStatelessResetToken(srcConnID)
@@ -452,6 +453,7 @@ var newClientConnection = func(
 		s.qlogger,
 		s.logger,
 		s.config.DisableHyStart,
+		s.config.EnableBBR,
 	)
 	s.currentMTUEstimate.Store(uint32(estimateMaxPayloadSize(protocol.ByteCount(s.config.InitialPacketSize))))
 	oneRTTStream := newCryptoStream()
