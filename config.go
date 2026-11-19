@@ -122,6 +122,8 @@ func populateConfig(config *Config) *Config {
 		EnableDatagrams:                  config.EnableDatagrams,
 		InitialPacketSize:                initialPacketSize,
 		DisablePathMTUDiscovery:          config.DisablePathMTUDiscovery,
+		DisableHyStart:                   config.DisableHyStart,
+		EnableBBR:                        config.EnableBBR,
 		EnableStreamResetPartialDelivery: config.EnableStreamResetPartialDelivery,
 		Allow0RTT:                        config.Allow0RTT,
 		Tracer:                           config.Tracer,

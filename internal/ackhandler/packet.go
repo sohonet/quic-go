@@ -24,6 +24,7 @@ type packet struct {
 	IsPathMTUProbePacket bool // We don't report the loss of Path MTU probe packets to the congestion controller.
 
 	includedInBytesInFlight bool
+	bbrInFlight             bool // Sampled by the current BBR controller, not pre-handshake Reno.
 	isPathProbePacket       bool
 }
 
@@ -47,6 +48,7 @@ func getPacket() *packet {
 	p.SendTime = 0
 	p.IsPathMTUProbePacket = false
 	p.includedInBytesInFlight = false
+	p.bbrInFlight = false
 	p.isPathProbePacket = false
 	return p
 }

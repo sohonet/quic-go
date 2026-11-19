@@ -321,6 +321,8 @@ var newConnection = func(
 		s.perspective,
 		s.qlogger,
 		s.logger,
+		s.config.DisableHyStart,
+		s.config.EnableBBR,
 	)
 	s.currentMTUEstimate.Store(uint32(estimateMaxPayloadSize(protocol.ByteCount(s.config.InitialPacketSize))))
 	statelessResetToken := statelessResetter.GetStatelessResetToken(srcConnID)
@@ -450,6 +452,8 @@ var newClientConnection = func(
 		s.perspective,
 		s.qlogger,
 		s.logger,
+		s.config.DisableHyStart,
+		s.config.EnableBBR,
 	)
 	s.currentMTUEstimate.Store(uint32(estimateMaxPayloadSize(protocol.ByteCount(s.config.InitialPacketSize))))
 	oneRTTStream := newCryptoStream()
@@ -2561,6 +2565,7 @@ func (c *Conn) sendPacketsWithoutGSO(now monotime.Time) error {
 		ecn := c.sentPacketHandler.ECNMode(true)
 		if _, err := c.appendOneShortHeaderPacket(buf, c.maxPacketSize(), ecn, now); err != nil {
 			if err == errNothingToPack {
+				c.notifyApplicationLimited()
 				buf.Release()
 				return nil
 			}
@@ -2603,6 +2608,7 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 			if err != errNothingToPack {
 				return err
 			}
+			c.notifyApplicationLimited()
 			if buf.Len() == 0 {
 				buf.Release()
 				return nil
@@ -2652,6 +2658,12 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 
 		ecn = nextECN
 		buf = getLargePacketBuffer()
+	}
+}
+
+func (c *Conn) notifyApplicationLimited() {
+	if handler, ok := c.sentPacketHandler.(interface{ OnApplicationLimited() }); ok {
+		handler.OnApplicationLimited()
 	}
 }
 
